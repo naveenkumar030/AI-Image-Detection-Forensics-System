@@ -1,5 +1,5 @@
 """
-VeriLens AI Detection Benchmark & Calibration Suite
+AI Image Detector AI Detection Benchmark & Calibration Suite
 Evaluates model accuracy, precision, recall, F1, ROC-AUC, confusion matrix,
 and multi-threshold accuracy on real vs. AI image datasets.
 Supports fitting temperature scaling and trained combiner models.
@@ -230,7 +230,7 @@ def run_benchmark(
         ai_images = ai_images[:max_images]
 
     print(f"\n=======================================================")
-    print(f"  VeriLens Forensics Benchmark Evaluation")
+    print(f"  AI Image Detector Forensics Benchmark Evaluation")
     print(f"=======================================================")
     print(f"Dataset root:   {dataset_dir}")
     print(f"Real images:    {len(real_images)}")
@@ -415,7 +415,7 @@ def run_benchmark(
     print(f"\n=======================================================\n")
 
 def main():
-    parser = argparse.ArgumentParser(description="VeriLens AI Detection Benchmark Suite")
+    parser = argparse.ArgumentParser(description="AI Image Detector AI Detection Benchmark Suite")
     parser.add_argument("--dataset", type=str, default="dataset", help="Path to dataset directory containing real/ and ai/ folders")
     parser.add_argument("--save-csv", type=str, default="evaluation_results.csv", help="Path to save evaluation CSV")
     parser.add_argument("--calibrate", action="store_true", help="Fit temperature scaling and train combiner model")

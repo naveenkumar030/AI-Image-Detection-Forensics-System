@@ -50,14 +50,14 @@ export default function Sidebar({ activeTab, setActiveTab, isMobileOpen, setIsMo
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <span className="font-bold text-lg tracking-tight text-[#2b2723] font-sans">
-                  Veri<span className="text-[#c15f3c]">Lens</span>
+                  AI <span className="text-[#c15f3c]">Detector</span>
                 </span>
                 <span className="shrink-0 text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-[#c15f3c]/10 text-[#c15f3c] border border-[#c15f3c]/30 font-bold">
                   RL v4.2
                 </span>
               </div>
               <p className="text-[11px] text-[#767167] font-medium tracking-wide truncate">
-                AI Image Detection
+                Forensics System
               </p>
             </div>
           </div>

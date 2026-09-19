@@ -160,7 +160,7 @@ export default function FinalVerdict({
           <span>SHA-256: {currentData.sha256?.substring(0, 16)}...</span>
           <span className={`text-[#2b2723] flex items-center gap-1.5 font-semibold`}>
             <CheckCircle2 className={`w-4 h-4 ${isSynthetic ? "text-[#c15f3c]" : "text-emerald-600"}`} />
-            Verified by VeriLens Multi-Signal Forensics
+            Verified by AI Image Detector Multi-Signal Forensics
           </span>
         </div>
 

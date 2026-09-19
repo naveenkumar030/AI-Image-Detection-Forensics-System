@@ -1,5 +1,5 @@
 """
-VeriLens RL — Python Forensics & Neural Detection Backend
+AI Image Detector — Python Forensics & Neural Detection Backend
 FastAPI + PyTorch + HuggingFace Transformers (umm-maybe/AI-image-detector) + OpenCV/NumPy/PIL Forensics
 Real vs AI Media Provenance Engine
 """
@@ -17,8 +17,11 @@ import numpy as np
 from PIL import Image, ImageChops, ImageEnhance, ImageOps, ExifTags
 import cv2
 import torch
+from pathlib import Path
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.scoring import (
@@ -31,7 +34,7 @@ from backend.scoring import (
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="VeriLens RL Python Forensics Engine",
+    title="AI Image Detector Python Forensics Engine",
     description="Real vs AI Image Detection & Multi-Signal Forensic Backend",
     version="2.1.0",
 )
@@ -44,6 +47,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --------------------------------------------------------------------------
+# Frontend Distribution Path Setup & Static Assets Mount
+# --------------------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent.parent
+DIST_DIR = BASE_DIR / "dist"
+if not DIST_DIR.exists():
+    DIST_DIR = Path.cwd() / "dist"
+INDEX_FILE = DIST_DIR / "index.html"
+ASSETS_DIR = DIST_DIR / "assets"
+
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
+
 
 # --------------------------------------------------------------------------
 # Global Model State & Background Loader
@@ -66,7 +83,7 @@ def load_neural_model():
     global model_state
     try:
         model_state["status"] = "loading"
-        print(f"[VeriLens] Loading neural vision model: {MODEL_ID} on {model_state['device']}...")
+        print(f"[AI-Detector] Loading neural vision model: {MODEL_ID} on {model_state['device']}...")
         from transformers import AutoImageProcessor, AutoModelForImageClassification
 
         processor = AutoImageProcessor.from_pretrained(MODEL_ID)
@@ -92,7 +109,7 @@ def load_neural_model():
         if real_idx is None:
             real_idx = 1 if ai_idx == 0 else 0
 
-        print(f"[VeriLens] Model labels resolved: id2label={id2label} -> AI idx={ai_idx} ('{id2label.get(ai_idx)}'), Real idx={real_idx} ('{id2label.get(real_idx)}')")
+        print(f"[AI-Detector] Model labels resolved: id2label={id2label} -> AI idx={ai_idx} ('{id2label.get(ai_idx)}'), Real idx={real_idx} ('{id2label.get(real_idx)}')")
 
         # Load temperature from calibration config if present
         calib_cfg = load_calibration_config()
@@ -104,12 +121,12 @@ def load_neural_model():
         model_state["real_label_index"] = real_idx
         model_state["label_map"] = {int(k): str(v) for k, v in id2label.items()}
         model_state["status"] = "ready"
-        print(f"[VeriLens] Model {MODEL_ID} ready for inference on {model_state['device']} (T={model_state['temperature']})!")
+        print(f"[AI-Detector] Model {MODEL_ID} ready for inference on {model_state['device']} (T={model_state['temperature']})!")
     except Exception as exc:
         model_state["status"] = "fallback"
         model_state["error_message"] = str(exc)
-        print(f"[VeriLens] Notice: Neural model warmup fallback ({exc}).")
-        print("[VeriLens] Algorithmic CV forensics (2D-FFT + ELA + Laplacian + EXIF) active.")
+        print(f"[AI-Detector] Notice: Neural model warmup fallback ({exc}).")
+        print("[AI-Detector] Algorithmic CV forensics (2D-FFT + ELA + Laplacian + EXIF) active.")
 
 @app.on_event("startup")
 def on_startup():
@@ -616,12 +633,41 @@ def detect_anomaly_hotspots(img_bgr: np.ndarray, is_synthetic: bool) -> Tuple[Li
 # --------------------------------------------------------------------------
 # API Endpoints
 # --------------------------------------------------------------------------
+@app.get("/")
+def get_root():
+    """Root landing endpoint: serves frontend UI if built, or API status info."""
+    if INDEX_FILE.exists():
+        return FileResponse(INDEX_FILE)
+    return {
+        "name": "AI Image Detector AI Image Detection & Forensics System API",
+        "version": "2.1.0",
+        "status": "online",
+        "documentation": "/docs",
+        "health_check": "/api/health",
+        "predict_endpoint": "/api/predict",
+        "message": "FastAPI backend is running. Frontend build not found. Run 'npm run build' to bundle the React UI."
+    }
+
+@app.get("/api")
+def get_api_info():
+    """API info endpoint."""
+    return {
+        "name": "AI Image Detector AI Image Detection & Forensics System API",
+        "version": "2.1.0",
+        "status": "online",
+        "documentation": "/docs",
+        "health_check": "/api/health",
+        "predict_endpoint": "/api/predict",
+        "message": "FastAPI backend is running. Combined fullstack mode active."
+    }
+
 @app.get("/api/health")
+
 def get_health():
     """Health check endpoint."""
     return {
         "status": "online",
-        "engine": "VeriLens Multi-Signal Forensics Core",
+        "engine": "AI Image Detector Multi-Signal Forensics Core",
         "python_version": sys.version.split()[0],
         "device": model_state["device"],
         "model_id": MODEL_ID,
@@ -720,11 +766,11 @@ async def predict_image(file: UploadFile = File(...)):
                 neural_real_score = float(agg_probs[real_idx].item())
                 model_used = MODEL_ID
             except Exception as e:
-                print(f"[VeriLens] Neural inference exception: {e}")
+                print(f"[AI-Detector] Neural inference exception: {e}")
                 model_used = None
 
         if model_used is None:
-            model_used = "VeriLens Multi-Signal CV Engine (FFT + ELA + PRNU + EXIF)"
+            model_used = "AI Image Detector Multi-Signal CV Engine (FFT + ELA + PRNU + EXIF)"
             neural_synthetic_score = 0.50
             neural_real_score = 0.50
 
@@ -846,7 +892,7 @@ async def predict_image(file: UploadFile = File(...)):
             "confidenceTier": confidence_tier,
             "statusBadge": status_badge,
             "riskLevel": risk_level,
-            "engine": "VeriLens Multi-Signal Forensics Engine (ViT + FFT + ELA + PRNU + EXIF)",
+            "engine": "AI Image Detector Multi-Signal Forensics Engine (ViT + FFT + ELA + PRNU + EXIF)",
             "primaryFindings": primary_findings,
             "supportingFindings": supporting_findings,
             "evidence": evidence_dict,
@@ -900,7 +946,7 @@ async def predict_image(file: UploadFile = File(...)):
         return result_data
 
     except Exception as err:
-        print(f"[VeriLens] Error processing prediction: {err}")
+        print(f"[AI-Detector] Error processing prediction: {err}")
         # Return valid fallback result instead of crashing
         try:
             file_format = pil_img.format or "JPEG" if 'pil_img' in dir() else "JPEG"
@@ -922,7 +968,7 @@ async def predict_image(file: UploadFile = File(...)):
             "cameraModel": "Fallback Analysis",
             "dateAnalyzed": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "imageUrl": None,
-            "modelUsed": "VeriLens CV Forensics Engine (Fallback)",
+            "modelUsed": "AI Image Detector CV Forensics Engine (Fallback)",
             "verdict": "INCONCLUSIVE FORENSIC ANALYSIS",
             "isAIGenerated": False,
             "confidence": 25,
@@ -932,7 +978,7 @@ async def predict_image(file: UploadFile = File(...)):
             "confidenceTier": "INCONCLUSIVE / SUSPICIOUS",
             "statusBadge": "INCONCLUSIVE / SUSPICIOUS",
             "riskLevel": "MEDIUM",
-            "engine": "VeriLens CV Forensics Engine",
+            "engine": "AI Image Detector CV Forensics Engine",
             "primaryFindings": [
                 "Neural model unavailable — analysis performed using CV forensics (FFT + ELA + PRNU).",
                 "2D-FFT spectral analysis and sensor noise residual computed.",
@@ -987,6 +1033,28 @@ async def predict_image(file: UploadFile = File(...)):
                 pass
 
         return fallback_result
+
+# --------------------------------------------------------------------------
+# Frontend SPA Routing & Static Assets Catch-All
+# --------------------------------------------------------------------------
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    """
+    Catch-all route to support Single-Page Application (SPA) client routing
+    and serve root-level static files (favicon.svg, icons.svg, etc.).
+    Excludes API endpoints and Swagger/OpenAPI docs.
+    """
+    if full_path.startswith("api/") or full_path in ("docs", "redoc", "openapi.json"):
+        raise HTTPException(status_code=404, detail="API endpoint not found")
+
+    candidate = DIST_DIR / full_path
+    if candidate.is_file():
+        return FileResponse(candidate)
+
+    if INDEX_FILE.exists():
+        return FileResponse(INDEX_FILE)
+
+    raise HTTPException(status_code=404, detail="Frontend build not found. Run 'npm run build' first.")
 
 if __name__ == "__main__":
     import uvicorn

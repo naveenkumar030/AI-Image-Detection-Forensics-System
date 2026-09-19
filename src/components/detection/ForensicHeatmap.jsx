@@ -8,7 +8,9 @@ import {
 } from "lucide-react";
 
 export default function ForensicHeatmap({ currentData }) {
-  const isSynthetic = !currentData.verdict.includes("AUTHENTIC");
+  const isSynthetic = currentData?.isAIGenerated !== undefined 
+    ? Boolean(currentData.isAIGenerated) 
+    : !currentData?.verdict?.includes("AUTHENTIC");
   const [zoomLevel, setZoomLevel] = useState(1);
   const [showHeatmap, setShowHeatmap] = useState(true);
 

@@ -35,7 +35,7 @@ export default function App() {
   // History list persisted in localStorage
   const [historyList, setHistoryList] = useState(() => {
     try {
-      const saved = localStorage.getItem("verilens_history");
+      const saved = localStorage.getItem("ai_detector_history");
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -56,7 +56,7 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("verilens_history", JSON.stringify(historyList));
+      localStorage.setItem("ai_detector_history", JSON.stringify(historyList));
     } catch (e) {
       console.error("Failed to persist history to localStorage", e);
     }
@@ -154,7 +154,7 @@ export default function App() {
   const handleClearHistory = () => {
     if (window.confirm("Are you sure you want to clear all forensic evaluation history?")) {
       setHistoryList([]);
-      localStorage.removeItem("verilens_history");
+      localStorage.removeItem("ai_detector_history");
     }
   };
 
@@ -268,7 +268,7 @@ export default function App() {
                   {/* 2. Responsive 4-Channel Evidence Grid */}
                   <EvidenceGrid
                     evidence={currentData.evidence}
-                    isAI={!currentData.verdict.includes("AUTHENTIC")}
+                    isAI={currentData.isAIGenerated !== undefined ? Boolean(currentData.isAIGenerated) : !currentData?.verdict?.includes("AUTHENTIC")}
                   />
 
                   {/* 3. Explainable RL (XRL) with Q-Value Saliency & Policy Map */}
@@ -342,7 +342,7 @@ export default function App() {
         <footer className="border-t border-[#b1ada1]/30 py-6 px-4 sm:px-8 text-center text-xs font-mono text-[#767167] bg-white/70 backdrop-blur-md">
           <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
             <div className="flex items-center gap-2">
-              <span className="text-[#c15f3c] font-bold">◉ VeriLens RL</span>
+              <span className="text-[#c15f3c] font-bold">◉ AI Image Detector</span>
               <span>— AI Image Detection</span>
             </div>
             <div className="flex items-center gap-4 text-[11px]">

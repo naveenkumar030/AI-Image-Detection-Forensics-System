@@ -11,8 +11,12 @@ import {
 
 export default function AnalyticsView({ historyList = [], onUploadClick }) {
   const totalScans = historyList.length;
-  const synthScans = historyList.filter((item) => item.verdict && !item.verdict.includes("AUTHENTIC")).length;
-  const realScans = historyList.filter((item) => item.verdict && item.verdict.includes("AUTHENTIC")).length;
+  const synthScans = historyList.filter((item) => 
+    item.isAIGenerated !== undefined ? Boolean(item.isAIGenerated) : (item.verdict && !item.verdict.includes("AUTHENTIC"))
+  ).length;
+  const realScans = historyList.filter((item) => 
+    item.isAIGenerated !== undefined ? !item.isAIGenerated : (item.verdict && item.verdict.includes("AUTHENTIC"))
+  ).length;
   
   const avgConfidence = totalScans > 0 
     ? (historyList.reduce((acc, curr) => acc + (curr.confidence || 0), 0) / totalScans).toFixed(1) 

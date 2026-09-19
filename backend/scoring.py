@@ -1,5 +1,5 @@
 """
-VeriLens Forensics & AI Image Detection — Calibrated Scoring Module
+AI Image Detector Forensics & AI Image Detection — Calibrated Scoring Module
 Combines:
   1. Neural Vision Transformer (umm-maybe/AI-image-detector) calibrated p_ai
   2. Multi-crop consistency & agreement metrics

@@ -27,7 +27,7 @@ export default function Topbar({
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-base lg:text-lg font-bold text-[#2b2723] tracking-tight font-sans">
-                VeriLens RL <span className="text-[#c15f3c] font-mono text-xs font-semibold">AI Detection</span>
+                AI Image Detector <span className="text-[#c15f3c] font-mono text-xs font-semibold">AI Detection</span>
               </h1>
               <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-full bg-[#c15f3c]/10 text-[#c15f3c] border border-[#c15f3c]/30 font-semibold">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#c15f3c]" />

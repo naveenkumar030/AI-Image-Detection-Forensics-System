@@ -11,7 +11,10 @@
 
 import { generateForensicsForFile, analyzeImageClientSide } from "../data/forensicSamples";
 
-const BACKEND_BASE_URL = window.location.port === "5173" ? "" : "http://127.0.0.1:8000";
+// By default, use relative /api paths.
+// In unified fullstack mode (FastAPI serving dist) and Vite dev mode (via proxy), relative paths work directly.
+// If relative fetch fails (e.g. standalone Vite preview without proxy), we fall back to http://127.0.0.1:8000.
+let activeBaseUrl = "";
 const REQUEST_TIMEOUT_MS = 35000;
 const RETRY_ATTEMPTS = 2;
 const RETRY_DELAY_MS = 1500;
@@ -21,27 +24,39 @@ const RETRY_DELAY_MS = 1500;
  * @returns {Promise<{isOnline: boolean, details: any}>}
  */
 export async function checkBackendHealth() {
+  // 1. Try relative endpoint first (works for unified FastAPI server & Vite proxy)
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-    let res;
-    try {
-      res = await fetch("/api/health", { signal: controller.signal });
-    } catch {
-      res = await fetch("http://127.0.0.1:8000/api/health", { signal: controller.signal });
-    }
-
+    const res = await fetch(`${activeBaseUrl}/api/health`, { signal: controller.signal });
     clearTimeout(timeoutId);
 
     if (res && res.ok) {
       const data = await res.json();
       return { isOnline: true, details: data };
     }
-    return { isOnline: false, details: null };
   } catch {
-    return { isOnline: false, details: null };
+    // 2. Relative fetch failed: if we aren't already on port 8000, attempt direct connection to FastAPI
+    if (activeBaseUrl === "" && typeof window !== "undefined" && window.location.port !== "8000") {
+      try {
+        const directController = new AbortController();
+        const directTimeout = setTimeout(() => directController.abort(), 2500);
+
+        const directRes = await fetch("http://127.0.0.1:8000/api/health", { signal: directController.signal });
+        clearTimeout(directTimeout);
+
+        if (directRes && directRes.ok) {
+          activeBaseUrl = "http://127.0.0.1:8000";
+          const data = await directRes.json();
+          return { isOnline: true, details: data };
+        }
+      } catch {
+        // Backend offline
+      }
+    }
   }
+  return { isOnline: false, details: null };
 }
 
 /**
@@ -96,6 +111,7 @@ async function fetchWithRetry(url, options, retries = RETRY_ATTEMPTS) {
  */
 async function normalizeBackendResponse(raw, objectUrl, dimensions) {
   const normalized = {
+    ...raw,
     id: raw.id || `scan-${Date.now()}`,
     filename: raw.filename || "unknown",
     fileSize: raw.fileSize || "0.00 MB",
@@ -118,7 +134,7 @@ async function normalizeBackendResponse(raw, objectUrl, dimensions) {
     confidenceTier: raw.confidenceTier || "INCONCLUSIVE / SUSPICIOUS",
     statusBadge: raw.statusBadge || "INCONCLUSIVE / SUSPICIOUS",
     riskLevel: raw.riskLevel || "MEDIUM",
-    engine: raw.engine || "VeriLens Multi-Signal Forensics Engine",
+    engine: raw.engine || "AI Image Detector Multi-Signal Forensics Engine",
     primaryFindings: raw.primaryFindings || [],
     supportingFindings: raw.supportingFindings || [],
     evidence: raw.evidence || {},
@@ -127,6 +143,7 @@ async function normalizeBackendResponse(raw, objectUrl, dimensions) {
     highImpactRegions: raw.highImpactRegions || [],
     heatmapHotspots: raw.heatmapHotspots || [],
     rlVerification: raw.rlVerification || {},
+    cropConsistency: raw.cropConsistency || {},
     backendConnected: true,
     clientMetrics: raw.clientMetrics || {},
   };
@@ -160,10 +177,9 @@ export async function analyzeImageWithPython(
 
   try {
     onStatusUpdate("[PYTHON-BACKEND] Attempting neural inference via FastAPI...");
-    const res = await fetchWithRetry("/api/predict", { method: "POST", body: formData });
+    const res = await fetchWithRetry(`${activeBaseUrl}/api/predict`, { method: "POST", body: formData });
     if (!res) {
-      const res2 = await fetchWithRetry("http://127.0.0.1:8000/api/predict", { method: "POST", body: formData });
-      if (res2) responseData = await res2.json();
+      console.warn("[AI-Detector] /api/predict returned no response after retries.");
     } else {
       responseData = await res.json();
     }
@@ -193,7 +209,7 @@ export async function analyzeImageWithPython(
   return {
     ...fallbackData,
     backendConnected: false,
-    modelUsed: fallbackData.modelUsed || "VeriLens Client Forensics (Canvas & Header Inspection)",
+    modelUsed: fallbackData.modelUsed || "AI Image Detector Client Forensics (Canvas & Header Inspection)",
     riskLevel: fallbackData.riskLevel || "LOW",
   };
 }

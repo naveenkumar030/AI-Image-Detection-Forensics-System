@@ -74,7 +74,7 @@ export default function HowItWorksView({ onTryScanner }) {
           Why RL Instead of Black-Box AI?
         </h2>
         <p className="text-base text-[#2b2723]/70 mt-3 leading-relaxed">
-          Traditional AI classifiers rely on superficial texture shortcuts that fail against new generators. VeriLens RL treats forensics as an autonomous Markov Decision Process (MDP), sequentially probing state-action spaces to verify digital provenance.
+          Traditional AI classifiers rely on superficial texture shortcuts that fail against new generators. AI Image Detector treats forensics as an autonomous Markov Decision Process (MDP), sequentially probing state-action spaces to verify digital provenance.
         </p>
       </div>
 

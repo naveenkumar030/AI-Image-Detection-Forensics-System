@@ -414,7 +414,7 @@ export function generateForensicsForFile(
   let isSynthetic = false;
   let synthScore = 18;
   let authenticScore = 82;
-  let modelUsed = modelResult?.modelUsed ?? "VeriLens Client Forensics (Canvas & Header Inspection)";
+  let modelUsed = modelResult?.modelUsed ?? "AI Image Detector Client Forensics (Canvas & Header Inspection)";
   let sha256Hash = clientAnalysis?.sha256Hex || "7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069";
   let hasCameraExif = clientAnalysis?.hasExifHeader ?? false;
 

@@ -18,7 +18,7 @@ export default function AnalysisScanner({ currentData, onAnalysisComplete }) {
   const [progress, setProgress] = useState(12);
   const [activeStageIndex, setActiveStageIndex] = useState(0);
   const [terminalLogs, setTerminalLogs] = useState([
-    "INITIALIZING: VeriLens RL Autonomous Agent Engine...",
+    "INITIALIZING: AI Image Detector Autonomous Agent Engine...",
     "MDP FORMULATION: Defining State Space S = {I_rgb, W_wavelet, F_fft, N_prnu}...",
     "POLICY INITIALIZATION: Loading Deep-Q Network & PPO Actor-Critic weights..."
   ]);

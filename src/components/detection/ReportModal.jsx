@@ -9,7 +9,9 @@ import {
 } from "lucide-react";
 
 export default function ReportModal({ currentData, onClose }) {
-  const isSynthetic = !currentData.verdict.includes("AUTHENTIC");
+  const isSynthetic = currentData?.isAIGenerated !== undefined 
+    ? Boolean(currentData.isAIGenerated) 
+    : !currentData?.verdict?.includes("AUTHENTIC");
 
   const handleCopyJSON = () => {
     const reportJSON = JSON.stringify(currentData, null, 2);
@@ -41,7 +43,7 @@ export default function ReportModal({ currentData, onClose }) {
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-xl font-bold text-[#2b2723] font-sans">
-                VeriLens RL Forensic Certificate
+                AI Image Detector Forensic Certificate
               </h3>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#c15f3c]/10 text-[#c15f3c] border border-[#c15f3c]/30 font-semibold">
                 MDP VERIFIED

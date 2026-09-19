@@ -20,11 +20,15 @@ export default function HistoryView({
   const [searchQuery, setSearchQuery] = useState("");
 
   const totalScans = historyList.length;
-  const synthScans = historyList.filter((item) => item.verdict && !item.verdict.includes("AUTHENTIC")).length;
+  const synthScans = historyList.filter((item) => 
+    item.isAIGenerated !== undefined ? Boolean(item.isAIGenerated) : (item.verdict && !item.verdict.includes("AUTHENTIC"))
+  ).length;
   const synthPercent = totalScans > 0 ? ((synthScans / totalScans) * 100).toFixed(1) : "0.0";
 
   const filteredHistory = historyList.filter((item) => {
-    const isSynthetic = item.verdict && !item.verdict.includes("AUTHENTIC");
+    const isSynthetic = item.isAIGenerated !== undefined 
+      ? Boolean(item.isAIGenerated) 
+      : Boolean(item.verdict && !item.verdict.includes("AUTHENTIC"));
     if (filter === "Synthetic" && !isSynthetic) return false;
     if (filter === "Authentic" && isSynthetic) return false;
 
@@ -150,7 +154,9 @@ export default function HistoryView({
         /* History Grid */
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredHistory.map((item) => {
-            const isSynthetic = item.verdict && !item.verdict.includes("AUTHENTIC");
+            const isSynthetic = item.isAIGenerated !== undefined 
+              ? Boolean(item.isAIGenerated) 
+              : Boolean(item.verdict && !item.verdict.includes("AUTHENTIC"));
 
             return (
               <div

@@ -9,7 +9,9 @@ import {
 } from "lucide-react";
 
 export default function ExplainableAI({ currentData }) {
-  const isSynthetic = !currentData.verdict.includes("AUTHENTIC");
+  const isSynthetic = currentData?.isAIGenerated !== undefined 
+    ? Boolean(currentData.isAIGenerated) 
+    : !currentData?.verdict?.includes("AUTHENTIC");
   const [opacity, setOpacity] = useState(70);
   const [selectedLayer, setSelectedLayer] = useState("qvalue"); // 'qvalue' | 'policy' | 'fft' | 'noise'
   const [activeRegion, setActiveRegion] = useState(null);

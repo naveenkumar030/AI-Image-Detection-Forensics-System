@@ -7,7 +7,7 @@ target_file = "test_ai_sdxl.jpg"
 # Try downloading SDXL sample if not already present
 if not os.path.exists(target_file):
     ai_img_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Astronaut_riding_a_horse_%28SDXL%29.jpg/300px-Astronaut_riding_a_horse_%28SDXL%29.jpg"
-    headers = {"User-Agent": "ImageForensicsBot/1.0 (https://github.com/verilens; test@example.com)"}
+    headers = {"User-Agent": "ImageForensicsBot/1.0 (https://github.com/ai-image-detector; test@example.com)"}
     try:
         r = requests.get(ai_img_url, headers=headers, timeout=10)
         if r.status_code == 200:
