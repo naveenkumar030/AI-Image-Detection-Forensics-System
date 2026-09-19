@@ -28,7 +28,7 @@ export const QUICK_TEST_SAMPLES = [
     confidenceTier: "Verified Real Camera",
     statusBadge: "REAL PHOTOGRAPH / AUTHENTIC",
     riskLevel: "LOW",
-    modelUsed: "prithivMLmods/deepfake-detector-model-v1 + Sensor PRNU",
+    modelUsed: "umm-maybe/AI-image-detector + Sensor PRNU",
     primaryFindings: [
       "Physical CMOS sensor PRNU noise residual confirmed across shadow gradients.",
       "Hardware camera EXIF tags validated: Canon EOS R5 with optical lens calibration.",
@@ -116,7 +116,7 @@ export const QUICK_TEST_SAMPLES = [
     confidenceTier: "High AI Confidence",
     statusBadge: "AI-GENERATED / SYNTHETIC",
     riskLevel: "CRITICAL",
-    modelUsed: "prithivMLmods/deepfake-detector-model-v1 + 2D-FFT Locus",
+    modelUsed: "umm-maybe/AI-image-detector + 2D-FFT Locus",
     primaryFindings: [
       "High-frequency periodic lattice detected in 2D Fourier power spectrum (diffusion artifacts).",
       "Complete absence of CMOS physical silicon sensor PRNU photon shot-noise.",

@@ -1,10 +1,10 @@
 /**
  * HuggingFace Inference API integration
- * Model: prithivMLmods/deepfake-detector-model-v1
- * Labels: "Realism" (authentic) | "Deepfake" (AI-generated)
+ * Model: umm-maybe/AI-image-detector
+ * Labels: "human" (authentic) | "artificial" (AI-generated)
  */
 
-const HF_MODEL_ID = "prithivMLmods/deepfake-detector-model-v1";
+const HF_MODEL_ID = "umm-maybe/AI-image-detector";
 const HF_API_URL = `https://api-inference.huggingface.co/models/${HF_MODEL_ID}`;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 8000; // HF cold-start can take ~20s, retry after 8s
@@ -68,13 +68,15 @@ export async function runDeepfakeDetection(file, apiToken, onStatusUpdate = () =
         throw new Error("UNEXPECTED_RESPONSE");
       }
 
-      // Find Deepfake and Realism scores
-      const deepfakeEntry = results.find((r) => r.label?.toLowerCase().includes("deepfake"))
+      // Find AI and Real scores
+      const deepfakeEntry = results.find((r) => r.label?.toLowerCase().includes("artificial"))
+        ?? results.find((r) => r.label?.toLowerCase().includes("deepfake"))
         ?? results.find((r) => r.label?.toLowerCase().includes("fake"))
         ?? results.find((r) => r.label?.toLowerCase().includes("ai"))
         ?? results[0];
 
-      const realEntry = results.find((r) => r.label?.toLowerCase().includes("realism"))
+      const realEntry = results.find((r) => r.label?.toLowerCase().includes("human"))
+        ?? results.find((r) => r.label?.toLowerCase().includes("realism"))
         ?? results.find((r) => r.label?.toLowerCase().includes("real"))
         ?? results.find((r) => r.label !== deepfakeEntry?.label)
         ?? results[1];

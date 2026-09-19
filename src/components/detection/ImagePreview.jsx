@@ -154,7 +154,7 @@ export default function ImagePreview({
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Check className="w-3.5 h-3.5 text-[#c15f3c]" />
-                    <span>prithivMLmods ViT</span>
+                    <span>umm-maybe ViT</span>
                   </div>
                 </div>
               </div>

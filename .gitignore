@@ -53,3 +53,7 @@ wheels/
 .env.*
 !.env.example
 
+# User uploaded test images & local test downloads
+user_uploaded_*
+test_ai_sdxl.jpg
+test_ai_synth.jpg

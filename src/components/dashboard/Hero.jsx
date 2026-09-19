@@ -70,8 +70,8 @@ export default function Hero({ onUploadClick }) {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mt-12 w-full pt-6 border-t border-[#b1ada1]/30">
           <div className="p-4 rounded-2xl bg-white border border-[#b1ada1]/35 text-left shadow-card-soft">
             <div className="text-[10px] font-mono text-[#767167] uppercase tracking-wider">NEURAL VI T</div>
-            <div className="text-base font-bold text-[#2b2723] mt-1 font-mono">Deepfake Classifier</div>
-            <div className="text-[10px] text-[#c15f3c] font-mono mt-0.5">prithivMLmods/v1</div>
+            <div className="text-base font-bold text-[#2b2723] mt-1 font-mono">AI Vision Classifier</div>
+            <div className="text-[10px] text-[#c15f3c] font-mono mt-0.5">umm-maybe/v1</div>
           </div>
           <div className="p-4 rounded-2xl bg-white border border-[#b1ada1]/35 text-left shadow-card-soft">
             <div className="text-[10px] font-mono text-[#767167] uppercase tracking-wider">SPECTRAL FREQUENCY</div>

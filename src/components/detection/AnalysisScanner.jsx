@@ -92,7 +92,7 @@ export default function AnalysisScanner({ currentData, onAnalysisComplete }) {
           setTerminalLogs((l) => [
             ...l.slice(-4),
             currentData?.backendConnected
-              ? `[PY-TORCH] Evaluated model: ${currentData.modelUsed || "prithivMLmods/deepfake-detector-model-v1"}`
+              ? `[PY-TORCH] Evaluated model: ${currentData.modelUsed || "umm-maybe/AI-image-detector"}`
               : `[MDP STEP 4/6] PRNU sensor agent isolated wavelet residuals; comparing with CMOS dark current.`
           ]);
         } else if (next >= 92 && next < 98) {

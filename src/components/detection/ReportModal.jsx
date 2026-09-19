@@ -103,7 +103,7 @@ export default function ReportModal({ currentData, onClose }) {
             <div className="col-span-2 pt-2 border-t border-[#b1ada1]/30 flex items-center justify-between">
               <div>
                 <span className="text-[#2b2723]/60 block text-[10px]">NEURAL CLASSIFIER MODEL:</span>
-                <span className="text-[#c15f3c] font-bold font-mono text-[11px]">{currentData.modelUsed || "prithivMLmods/deepfake-detector-model-v1"}</span>
+                <span className="text-[#c15f3c] font-bold font-mono text-[11px]">{currentData.modelUsed || "umm-maybe/AI-image-detector"}</span>
               </div>
               <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-semibold">Python Backend Active</span>
             </div>

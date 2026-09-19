@@ -1,6 +1,6 @@
 """
 VeriLens RL — Python Forensics & Neural Detection Backend
-FastAPI + PyTorch + HuggingFace Transformers (prithivMLmods/deepfake-detector-model-v1) + OpenCV/NumPy/PIL Forensics
+FastAPI + PyTorch + HuggingFace Transformers (umm-maybe/AI-image-detector) + OpenCV/NumPy/PIL Forensics
 Real vs AI Media Provenance Engine
 """
 
@@ -11,21 +11,29 @@ import time
 import math
 import hashlib
 import threading
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import numpy as np
-from PIL import Image, ImageChops, ImageEnhance, ExifTags
+from PIL import Image, ImageChops, ImageEnhance, ImageOps, ExifTags
 import cv2
 import torch
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from backend.scoring import (
+    combine_signals,
+    load_calibration_config,
+    DEFAULT_TEMPERATURE,
+    AI_THRESHOLD,
+    REAL_THRESHOLD,
+)
+
 # Initialize FastAPI app
 app = FastAPI(
     title="VeriLens RL Python Forensics Engine",
     description="Real vs AI Image Detection & Multi-Signal Forensic Backend",
-    version="2.0.0",
+    version="2.1.0",
 )
 
 # Enable CORS for Vite frontend
@@ -40,48 +48,238 @@ app.add_middleware(
 # --------------------------------------------------------------------------
 # Global Model State & Background Loader
 # --------------------------------------------------------------------------
-MODEL_ID = "prithivMLmods/deepfake-detector-model-v1"
+MODEL_ID = "umm-maybe/AI-image-detector"
 model_state = {
     "status": "initializing",  # "ready" | "loading" | "fallback" | "error"
-    "classifier": None,
+    "processor": None,
+    "model": None,
     "device": "cuda" if torch.cuda.is_available() else "cpu",
+    "ai_label_index": 0,
+    "real_label_index": 1,
+    "label_map": {},
+    "temperature": DEFAULT_TEMPERATURE,
     "error_message": None,
 }
 
 def load_neural_model():
-    """Asynchronously loads the HuggingFace image classification pipeline."""
+    """Asynchronously loads AutoImageProcessor and AutoModelForImageClassification."""
     global model_state
     try:
         model_state["status"] = "loading"
         print(f"[VeriLens] Loading neural vision model: {MODEL_ID} on {model_state['device']}...")
-        from transformers import pipeline
+        from transformers import AutoImageProcessor, AutoModelForImageClassification
 
-        device_index = 0 if torch.cuda.is_available() else -1
-        classifier = pipeline(
-            "image-classification",
-            model=MODEL_ID,
-            device=device_index,
-        )
-        model_state["classifier"] = classifier
+        processor = AutoImageProcessor.from_pretrained(MODEL_ID)
+        model = AutoModelForImageClassification.from_pretrained(MODEL_ID)
+        model.eval()
+
+        if model_state["device"] == "cuda":
+            model.to("cuda")
+
+        # Dynamic label mapping from config.id2label
+        id2label = getattr(model.config, "id2label", {0: "artificial", 1: "human"})
+        ai_idx = None
+        real_idx = None
+        for idx, lbl in id2label.items():
+            lbl_str = str(lbl).lower()
+            if any(k in lbl_str for k in ["artificial", "ai", "synthetic", "fake", "deepfake"]):
+                ai_idx = int(idx)
+            elif any(k in lbl_str for k in ["human", "real", "authentic"]):
+                real_idx = int(idx)
+
+        if ai_idx is None:
+            ai_idx = 0
+        if real_idx is None:
+            real_idx = 1 if ai_idx == 0 else 0
+
+        print(f"[VeriLens] Model labels resolved: id2label={id2label} -> AI idx={ai_idx} ('{id2label.get(ai_idx)}'), Real idx={real_idx} ('{id2label.get(real_idx)}')")
+
+        # Load temperature from calibration config if present
+        calib_cfg = load_calibration_config()
+        model_state["temperature"] = float(calib_cfg.get("temperature", DEFAULT_TEMPERATURE))
+
+        model_state["processor"] = processor
+        model_state["model"] = model
+        model_state["ai_label_index"] = ai_idx
+        model_state["real_label_index"] = real_idx
+        model_state["label_map"] = {int(k): str(v) for k, v in id2label.items()}
         model_state["status"] = "ready"
-        print(f"[VeriLens] Model {MODEL_ID} ready for inference!")
+        print(f"[VeriLens] Model {MODEL_ID} ready for inference on {model_state['device']} (T={model_state['temperature']})!")
     except Exception as exc:
         model_state["status"] = "fallback"
         model_state["error_message"] = str(exc)
         print(f"[VeriLens] Notice: Neural model warmup fallback ({exc}).")
         print("[VeriLens] Algorithmic CV forensics (2D-FFT + ELA + Laplacian + EXIF) active.")
 
-# Start background model loading thread
-threading.Thread(target=load_neural_model, daemon=True).start()
+@app.on_event("startup")
+def on_startup():
+    if model_state["status"] not in ["ready", "loading"]:
+        threading.Thread(target=load_neural_model, daemon=True).start()
+
+# Start background model loading thread if running server directly or under uvicorn
+if __name__ == "__main__" or any("uvicorn" in arg.lower() for arg in sys.argv):
+    threading.Thread(target=load_neural_model, daemon=True).start()
+
+def preprocess_image(pil_img: Image.Image) -> Image.Image:
+    """
+    Robust image preprocessing:
+    - Normalizes EXIF orientation
+    - Converts RGBA/LA (transparent PNG) by compositing over clean white background
+    - Converts CMYK, Palette (P), Grayscale (L) to standard RGB
+    """
+    try:
+        pil_img = ImageOps.exif_transpose(pil_img)
+    except Exception:
+        pass
+
+    if pil_img.mode in ("RGBA", "LA") or (pil_img.mode == "P" and "transparency" in pil_img.info):
+        rgba = pil_img.convert("RGBA")
+        background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        composite = Image.alpha_composite(background, rgba)
+        return composite.convert("RGB")
+    elif pil_img.mode != "RGB":
+        return pil_img.convert("RGB")
+    return pil_img
+
+def generate_multi_crops(rgb_img: Image.Image, cap: int = 6, enable_tta: bool = True) -> List[Image.Image]:
+    """
+    Multi-crop inference patches with test-time augmentation (horizontal flip).
+    Extracts full image, central tile, and corner tiles up to cap.
+    """
+    w, h = rgb_img.size
+    crops = [rgb_img]
+    if enable_tta:
+        crops.append(ImageOps.mirror(rgb_img))
+
+    if w >= 256 and h >= 256:
+        # Center crop (80% box)
+        cw, ch = int(w * 0.80), int(h * 0.80)
+        cx, cy = (w - cw) // 2, (h - ch) // 2
+        center = rgb_img.crop((cx, cy, cx + cw, cy + ch))
+        crops.append(center)
+        if enable_tta and len(crops) < cap:
+            crops.append(ImageOps.mirror(center))
+
+        # Corner crops
+        if len(crops) < cap:
+            pw, ph = int(w * 0.70), int(h * 0.70)
+            crops.append(rgb_img.crop((0, 0, pw, ph)))  # Top-left
+        if len(crops) < cap:
+            crops.append(rgb_img.crop((w - pw, h - ph, w, h)))  # Bottom-right
+
+    return crops[:cap]
 
 # --------------------------------------------------------------------------
 # Computer Vision Forensic Feature Extractors
 # --------------------------------------------------------------------------
-def extract_exif_metadata(pil_img: Image.Image) -> Dict[str, Any]:
+def extract_c2pa_and_generator_headers(raw_bytes: Optional[bytes]) -> Dict[str, Any]:
     """
-    Extracts detailed camera hardware EXIF tags and checks for synthetic/AI software markers.
-    Real photos typically contain camera manufacturer, exposure, and ISO tags.
-    AI generated images often lack EXIF or contain generator tags.
+    Deep binary chunk scanner for C2PA / Content Credentials manifests and generative tool signatures:
+    - JUMBF boxes (JPEG / PNG / WebP C2PA metadata manifests)
+    - C2PA action claims: c2pa.action.created (Generative), c2pa.action.captured (Authentic Hardware)
+    - Vendor manifests: Adobe Firefly, OpenAI DALL-E, Microsoft Designer / Copilot, Google SynthID, Midjourney
+    - Local diffusion workflow parameters: Automatic1111/Forge chunks, ComfyUI execution graphs, InvokeAI
+    """
+    result = {
+        "has_c2pa_manifest": False,
+        "c2pa_action": None,          # "generative" | "captured" | "edited" | None
+        "c2pa_tool": None,
+        "is_generative_provenance": False,
+        "is_authentic_provenance": False,
+        "detected_ai_tool": None,
+        "has_generator_parameters": False,
+        "generator_details": None,
+        "raw_markers_matched": [],
+    }
+    if not raw_bytes or len(raw_bytes) < 64:
+        return result
+
+    # Scan header (first 256KB) and footer (last 64KB) where manifests/parameter chunks reside
+    raw_header = raw_bytes[:262144]
+    raw_footer = raw_bytes[-65536:] if len(raw_bytes) > 65536 else b""
+    combined_chunks = (raw_header + raw_footer).lower()
+
+    # 1. C2PA / Content Credentials & JUMBF Box Signatures
+    c2pa_signatures = [b"c2pa", b"jumbf", b"jumb", b"contentcredentials", b"c2as", b"c2ma"]
+    has_c2pa = any(sig in combined_chunks for sig in c2pa_signatures)
+
+    if has_c2pa:
+        result["has_c2pa_manifest"] = True
+        result["raw_markers_matched"].append("c2pa_manifest_detected")
+
+        # Distinguish AI generation vs genuine camera capture C2PA claim
+        # Leica M11-P, Sony Alpha Authenticity, Nikon C2PA embeds "c2pa.action.captured" or "camera"
+        if b"c2pa.action.captured" in combined_chunks or b"c2pa.action.created" in combined_chunks:
+            if b"c2pa.action.captured" in combined_chunks and not any(k in combined_chunks for k in [b"firefly", b"dall-e", b"generative", b"openai"]):
+                result["c2pa_action"] = "captured"
+                result["is_authentic_provenance"] = True
+                result["c2pa_tool"] = "C2PA Verified Camera Capture (Hardware Manifest)"
+            else:
+                result["c2pa_action"] = "generative"
+                result["is_generative_provenance"] = True
+
+        # Check vendor-specific generative C2PA claims
+        if b"adobe:generativefill" in combined_chunks or b"com.adobe.firefly" in combined_chunks or (b"firefly" in combined_chunks and b"c2pa" in combined_chunks):
+            result["c2pa_tool"] = "Adobe Firefly (C2PA Content Credentials)"
+            result["is_generative_provenance"] = True
+            result["detected_ai_tool"] = "Adobe Firefly (Generative Fill / C2PA)"
+            result["raw_markers_matched"].append("adobe_firefly_c2pa")
+        elif b"dall-e" in combined_chunks or b"openai" in combined_chunks:
+            result["c2pa_tool"] = "OpenAI DALL-E (C2PA Content Credentials)"
+            result["is_generative_provenance"] = True
+            result["detected_ai_tool"] = "OpenAI DALL-E 3 (C2PA Verified)"
+            result["raw_markers_matched"].append("openai_c2pa")
+        elif b"google" in combined_chunks and (b"synthid" in combined_chunks or b"imagen" in combined_chunks):
+            result["c2pa_tool"] = "Google Generative Media / SynthID (C2PA Verified)"
+            result["is_generative_provenance"] = True
+            result["detected_ai_tool"] = "Google SynthID / Imagen"
+            result["raw_markers_matched"].append("google_synthid_c2pa")
+        elif b"microsoft" in combined_chunks or b"copilot designer" in combined_chunks or b"bing image creator" in combined_chunks:
+            result["c2pa_tool"] = "Microsoft Copilot Designer (C2PA Verified)"
+            result["is_generative_provenance"] = True
+            result["detected_ai_tool"] = "Microsoft Designer / Copilot"
+            result["raw_markers_matched"].append("microsoft_copilot_c2pa")
+        elif not result["c2pa_tool"]:
+            result["c2pa_tool"] = "C2PA Provenance Manifest"
+            if b"generative" in combined_chunks or b"ai" in combined_chunks:
+                result["is_generative_provenance"] = True
+                result["detected_ai_tool"] = "AI Generative Model (C2PA Claim)"
+
+    # 2. Local Generative Workflow Metadata (Automatic1111 / WebUI / ComfyUI / InvokeAI)
+    if b"negative prompt:" in combined_chunks or (b"steps: " in combined_chunks and b"sampler: " in combined_chunks):
+        result["has_generator_parameters"] = True
+        result["is_generative_provenance"] = True
+        result["detected_ai_tool"] = result["detected_ai_tool"] or "Stable Diffusion (Automatic1111 Metadata)"
+        result["generator_details"] = "Automatic1111 / SD-WebUI prompt parameters found in header chunks"
+        result["raw_markers_matched"].append("a1111_parameters")
+
+    if b"\"class_type\": \"ksampler\"" in combined_chunks or b"\"class_type\":\"ksampler\"" in combined_chunks or (b"\"nodes\":" in combined_chunks and b"sampler" in combined_chunks):
+        result["has_generator_parameters"] = True
+        result["is_generative_provenance"] = True
+        result["detected_ai_tool"] = result["detected_ai_tool"] or "ComfyUI Workflow Metadata"
+        result["generator_details"] = "ComfyUI node execution graph embedded in image header"
+        result["raw_markers_matched"].append("comfyui_graph")
+
+    if b"invokeai" in combined_chunks or b"sd-metadata" in combined_chunks:
+        result["has_generator_parameters"] = True
+        result["is_generative_provenance"] = True
+        result["detected_ai_tool"] = result["detected_ai_tool"] or "InvokeAI Metadata"
+        result["generator_details"] = "InvokeAI generation metadata found in image chunks"
+        result["raw_markers_matched"].append("invokeai_metadata")
+
+    if b"midjourney" in combined_chunks or b"mj_version" in combined_chunks:
+        result["has_generator_parameters"] = True
+        result["is_generative_provenance"] = True
+        result["detected_ai_tool"] = result["detected_ai_tool"] or "Midjourney Signature"
+        result["generator_details"] = "Midjourney generation parameters identified in header"
+        result["raw_markers_matched"].append("midjourney_header")
+
+    return result
+
+def extract_exif_metadata(pil_img: Image.Image, raw_bytes: Optional[bytes] = None) -> Dict[str, Any]:
+    """
+    Extracts camera hardware EXIF tags and checks for synthetic/AI software markers
+    and C2PA (Coalition for Content Provenance and Authenticity) manifests.
     """
     exif_data = {}
     try:
@@ -124,7 +322,7 @@ def extract_exif_metadata(pil_img: Image.Image) -> Dict[str, Any]:
     has_hardware_make = any(c in make.lower() or c in model.lower() for c in known_cams)
     has_exposure_params = (exposure is not None) or (iso is not None) or (f_stop is not None)
 
-    # Comprehensive generative software markers
+    # Comprehensive generative software markers in text EXIF
     ai_software_markers = [
         "stable diffusion", "stablediffusion", "midjourney", "novelai", "dall-e", 
         "dalle", "comfyui", "automatic1111", "fooocus", "flux", "adobe firefly", 
@@ -138,12 +336,21 @@ def extract_exif_metadata(pil_img: Image.Image) -> Dict[str, Any]:
     combined_meta_text = f"{software} {artist} {description} {user_comment} {lens_model} {make} {model}".lower()
     has_ai_tag = any(marker in combined_meta_text for marker in ai_software_markers)
 
-    # Extract specific AI tool names found
+    # Extract specific AI tool names found in EXIF text
     detected_ai_tool = None
     for marker in ai_software_markers:
         if marker in combined_meta_text:
             detected_ai_tool = marker.title()
             break
+
+    # Deep C2PA & Content Credentials Binary Manifest Scanner
+    c2pa_provenance = extract_c2pa_and_generator_headers(raw_bytes)
+    has_c2pa_manifest = c2pa_provenance["has_c2pa_manifest"]
+    c2pa_tool = c2pa_provenance["c2pa_tool"]
+
+    if c2pa_provenance["is_generative_provenance"]:
+        has_ai_tag = True
+        detected_ai_tool = c2pa_provenance["detected_ai_tool"] or detected_ai_tool or c2pa_tool
 
     has_camera_hardware = has_hardware_make and (has_exposure_params or len(model) > 2)
 
@@ -176,6 +383,11 @@ def extract_exif_metadata(pil_img: Image.Image) -> Dict[str, Any]:
         "has_exposure_params": has_exposure_params,
         "has_ai_tag": has_ai_tag,
         "detected_ai_tool": detected_ai_tool,
+        "has_c2pa_manifest": has_c2pa_manifest,
+        "c2pa_tool": c2pa_tool,
+        "c2pa_provenance": c2pa_provenance,
+        "is_authentic_c2pa": c2pa_provenance["is_authentic_provenance"],
+        "is_generative_c2pa": c2pa_provenance["is_generative_provenance"],
         "camera_make": make or None,
         "camera_model": model or None,
         "lens_model": lens_model or None,
@@ -314,28 +526,69 @@ def compute_noise_and_laplacian(img_bgr: np.ndarray) -> Dict[str, Any]:
         "synthetic_smoothness": round(synthetic_smoothness, 1),
     }
 
-def detect_anomaly_hotspots(img_bgr: np.ndarray, is_synthetic: bool) -> List[Dict[str, Any]]:
+def detect_anomaly_hotspots(img_bgr: np.ndarray, is_synthetic: bool) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Locates spatial anomaly centers using grid-based variance divergence.
+    Returns:
+      hotspots: Top 3 high-impact regions
+      spatial_grid: Complete 4x4 matrix (16 cells) of spatial quantization metrics
     """
     h, w, _ = img_bgr.shape
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
     grid_y, grid_x = 4, 4
-    patch_h = h // grid_y
-    patch_w = w // grid_x
+    patch_h = max(1, h // grid_y)
+    patch_w = max(1, w // grid_x)
 
+    cell_data = []
     variances = []
     coords = []
 
+    min_v = 1e9
+    max_v = -1e9
+
     for r in range(grid_y):
         for c in range(grid_x):
-            patch = gray[r*patch_h:(r+1)*patch_h, c*patch_w:(c+1)*patch_w]
-            var = float(np.var(patch))
+            patch = gray[r * patch_h:min(h, (r + 1) * patch_h), c * patch_w:min(w, (c + 1) * patch_w)]
+            var = float(np.var(patch)) if patch.size > 0 else 0.0
             cx = int(((c + 0.5) / grid_x) * 100)
             cy = int(((r + 0.5) / grid_y) * 100)
             variances.append(var)
             coords.append((cx, cy))
+            min_v = min(min_v, var)
+            max_v = max(max_v, var)
+            cell_data.append({
+                "id": f"{chr(65 + r)}{c + 1}",
+                "row": r,
+                "col": c,
+                "x": cx,
+                "y": cy,
+                "variance": var,
+            })
+
+    v_range = max(1e-5, max_v - min_v)
+    spatial_grid = []
+    for item in cell_data:
+        norm_v = (item["variance"] - min_v) / v_range
+        # For synthetic images, higher local variance anomaly indicates localized generation dissonance
+        # For real images, variance represents natural scene texture
+        anomaly_score = int(round(norm_v * 100)) if is_synthetic else int(round((1.0 - norm_v) * 100))
+        level = "High Anomaly" if norm_v > 0.65 else ("Moderate Anomaly" if norm_v > 0.35 else "Nominal Baseline")
+        if not is_synthetic:
+            level = "Natural Detail" if norm_v > 0.65 else ("Uniform Texture" if norm_v > 0.35 else "Smooth Baseline")
+
+        spatial_grid.append({
+            "id": item["id"],
+            "row": item["row"],
+            "col": item["col"],
+            "x": item["x"],
+            "y": item["y"],
+            "variance": round(item["variance"], 2),
+            "normalizedVariance": round(norm_v, 3),
+            "anomalyScore": anomaly_score,
+            "level": level,
+            "isAnomaly": (norm_v > 0.60) if is_synthetic else False,
+        })
 
     sorted_indices = np.argsort(variances)[::-1]
     hotspots = []
@@ -358,7 +611,7 @@ def detect_anomaly_hotspots(img_bgr: np.ndarray, is_synthetic: bool) -> List[Dic
             "rewardDelta": f"{'+' if is_synthetic else '-'}{round(0.20 + (idx * 0.08), 2)}",
         })
 
-    return hotspots
+    return hotspots, spatial_grid
 
 # --------------------------------------------------------------------------
 # API Endpoints
@@ -374,6 +627,10 @@ def get_health():
         "model_id": MODEL_ID,
         "model_status": model_state["status"],
         "pytorch_version": torch.__version__,
+        "labels": model_state.get("label_map", {}),
+        "ai_label_index": model_state.get("ai_label_index", 0),
+        "real_label_index": model_state.get("real_label_index", 1),
+        "temperature": model_state.get("temperature", DEFAULT_TEMPERATURE),
     }
 
 @app.post("/api/model/load")
@@ -388,7 +645,7 @@ async def predict_image(file: UploadFile = File(...)):
     """
     Main forensic evaluation endpoint:
     Runs multi-signal ensemble combining:
-    1. Vision Transformer Neural Model (prithivMLmods/deepfake-detector-model-v1)
+    1. Vision Transformer Neural Model (umm-maybe/AI-image-detector)
     2. Camera Hardware EXIF Provenance
     3. 2D Fast Fourier Transform (2D-FFT) Azimuthal Power Spectrum
     4. Error Level Analysis (ELA) JPEG Quantization Variance
@@ -403,263 +660,116 @@ async def predict_image(file: UploadFile = File(...)):
         md5_hash = hashlib.md5(raw_bytes).hexdigest()
         sha256_hash = hashlib.sha256(raw_bytes).hexdigest()
 
-        # Image parsing
-        pil_img = Image.open(io.BytesIO(raw_bytes))
+        # Image parsing with robust preprocessing (EXIF orientation, alpha compositing)
+        raw_pil = Image.open(io.BytesIO(raw_bytes))
+        pil_img = preprocess_image(raw_pil)
         width, height = pil_img.size
-        img_rgb = np.array(pil_img.convert("RGB"))
+        img_rgb = np.array(pil_img)
         img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
         img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
         # 1. Forensic Feature Extraction
-        exif_feats = extract_exif_metadata(pil_img)
+        exif_feats = extract_exif_metadata(raw_pil, raw_bytes=raw_bytes)
         fft_feats = compute_2d_fft_features(img_gray)
         ela_feats = compute_error_level_analysis(pil_img)
         noise_feats = compute_noise_and_laplacian(img_bgr)
 
-        # 2. Vision Transformer Neural Inference
+        # 2. Multi-Crop Vision Transformer Neural Inference
         neural_synthetic_score = None
         neural_real_score = None
+        crop_stats = {"mean": 0.5, "std": 0.0, "min": 0.5, "max": 0.5, "num_crops": 1}
         model_used = None
 
-        if model_state["status"] == "ready" and model_state["classifier"] is not None:
+        if model_state["status"] == "ready" and model_state["model"] is not None and model_state["processor"] is not None:
             try:
-                classifier = model_state["classifier"]
+                processor = model_state["processor"]
+                model = model_state["model"]
+                device = model_state["device"]
+                temp = float(model_state.get("temperature", DEFAULT_TEMPERATURE))
+                ai_idx = model_state.get("ai_label_index", 0)
+                real_idx = model_state.get("real_label_index", 1)
 
-                # Convert to RGB explicitly for the pipeline
-                rgb_img = pil_img.convert("RGB")
+                # Generate multi-crops with test-time augmentation (TTA)
+                crops = generate_multi_crops(pil_img, cap=6, enable_tta=True)
 
-                # Run inference through the HuggingFace pipeline
-                # The pipeline handles internal preprocessing
+                inputs = processor(images=crops, return_tensors="pt")
+                if device == "cuda":
+                    inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
                 with torch.no_grad():
-                    preds = classifier(rgb_img)
+                    outputs = model(**inputs)
+                    logits = outputs.logits  # shape: (N, num_classes)
+
+                # Temperature scaling & per-crop probabilities
+                scaled_logits = logits / temp
+                probs = torch.softmax(scaled_logits, dim=-1)
+
+                crop_ai_probs = probs[:, ai_idx].cpu().numpy().tolist()
+                crop_stats = {
+                    "mean": float(np.mean(crop_ai_probs)),
+                    "std": float(np.std(crop_ai_probs)),
+                    "min": float(np.min(crop_ai_probs)),
+                    "max": float(np.max(crop_ai_probs)),
+                    "num_crops": len(crops),
+                }
+
+                # Aggregate logits across crops (mean of scaled logits)
+                mean_logits = torch.mean(scaled_logits, dim=0)
+                agg_probs = torch.softmax(mean_logits, dim=-1)
+                neural_synthetic_score = float(agg_probs[ai_idx].item())
+                neural_real_score = float(agg_probs[real_idx].item())
                 model_used = MODEL_ID
-                for p in preds[0]:
-                    lbl = p["label"].lower()
-                    scr = float(p["score"])
-                    if "deepfake" in lbl or "fake" in lbl or "ai" in lbl or "synthetic" in lbl:
-                        neural_synthetic_score = scr
-                    elif "real" in lbl or "authentic" in lbl:
-                        neural_real_score = scr
-
-                # Fallback if labels not explicitly matched
-                if neural_synthetic_score is None and len(preds[0]) > 0:
-                    neural_synthetic_score = float(preds[0][0]["score"])
-                if neural_real_score is None:
-                    neural_real_score = 1.0 - (neural_synthetic_score or 0.5)
-
-                # Normalize
-                tot = (neural_synthetic_score or 0.0) + (neural_real_score or 0.0)
-                if tot > 0:
-                    neural_synthetic_score /= tot
-                    neural_real_score /= tot
             except Exception as e:
-                err_str = str(e).lower()
                 print(f"[VeriLens] Neural inference exception: {e}")
-                # Graceful fallback — CV forensics engine will handle the analysis
                 model_used = None
 
         if model_used is None:
             model_used = "VeriLens Multi-Signal CV Engine (FFT + ELA + PRNU + EXIF)"
+            neural_synthetic_score = 0.50
+            neural_real_score = 0.50
 
-        # 3. Calibrated Multi-Signal Ensemble
-        # Use sigmoid-calibrated scores from individual forensic functions for smooth graduated output
-        fft_anomaly = fft_feats["azimuthal_score"] / 100.0
-        ela_anomaly = ela_feats["ela_anomaly_score"] / 100.0
-        noise_smoothness = noise_feats["synthetic_smoothness"] / 100.0
+        # 3. Calibrated Multi-Signal Scoring Engine (backend/scoring.py)
+        scoring_res = combine_signals(
+            neural_p_ai=neural_synthetic_score,
+            crop_stats=crop_stats,
+            fft_feats=fft_feats,
+            ela_feats=ela_feats,
+            noise_feats=noise_feats,
+            exif_feats=exif_feats,
+            width=width,
+            height=height,
+            file_size_bytes=len(raw_bytes),
+            temperature=float(model_state.get("temperature", DEFAULT_TEMPERATURE)),
+            ai_threshold=AI_THRESHOLD,
+            real_threshold=REAL_THRESHOLD,
+        )
 
-        # Graduated EXIF indicator based on provenance strength
-        if exif_feats["has_ai_tag"] and exif_feats["detected_ai_tool"]:
-            exif_ai_factor = 0.95
-        elif exif_feats["has_camera_hardware"] and exif_feats["has_exposure_params"]:
-            exif_ai_factor = 0.03
-        elif exif_feats["has_camera_hardware"]:
-            exif_ai_factor = 0.10
-        elif exif_feats["has_exposure_params"]:
-            exif_ai_factor = 0.25
-        elif exif_feats["raw_tags_count"] > 0:
-            exif_ai_factor = 0.40
-        else:
-            exif_ai_factor = 0.70
+        is_synthetic = scoring_res["is_ai_generated"]
+        synthetic_prob = scoring_res["calibrated_p_ai"]
+        synth_score = scoring_res["synthetic_confidence"]
+        authentic_score = scoring_res["real_confidence"]
+        uncertain_score = scoring_res["uncertain_confidence"]
+        display_confidence = scoring_res["display_confidence"]
+        verdict_text = scoring_res["verdict"]
+        status_badge = scoring_res["status_badge"]
+        confidence_tier = scoring_res["confidence_tier"]
+        risk_level = scoring_res["risk_level"]
+        primary_findings = scoring_res["reasons"]
+        limitations = scoring_res["limitations"]
 
-        # Physical camera hardware dampener: graduated based on provenance strength
-        hardware_dampener = 1.0
-        if exif_feats["has_camera_hardware"] and exif_feats["has_exposure_params"]:
-            hardware_dampener = 0.55
-        elif exif_feats["has_camera_hardware"]:
-            hardware_dampener = 0.70
-        elif exif_feats["has_exposure_params"]:
-            hardware_dampener = 0.80
+        # Supporting findings
+        supporting_findings = [
+            f"Primary classifier: {model_used} (temperature T={model_state.get('temperature', 1.0):.2f}).",
+            f"Multi-crop evaluation: {crop_stats['num_crops']} patches evaluated (crop consistency std: {crop_stats['std']:.3f}).",
+            f"Forensic signal quality weight: {int(scoring_res['quality_multiplier'] * 100)}% reliability.",
+        ]
+        if limitations:
+            supporting_findings.extend(limitations)
 
-        # Ensemble weights: ViT (30%), FFT (25%), PRNU (20%), ELA (15%), EXIF (10%)
-        if neural_synthetic_score is not None:
-            neural_synthetic_score = float(neural_synthetic_score)
-            combined_synthetic_prob = (
-                (neural_synthetic_score * 0.30) +
-                (fft_anomaly * 0.25) +
-                (noise_smoothness * 0.20) +
-                (ela_anomaly * 0.15) +
-                (exif_ai_factor * 0.10)
-            ) * hardware_dampener
+        # 4. Generate Spatial Hotspots and 4x4 Forensic Grid
+        hotspots, spatial_grid = detect_anomaly_hotspots(img_bgr, is_synthetic)
 
-            if exif_feats["has_camera_hardware"] and not fft_feats["is_abnormal_spectrum"] and noise_feats["has_sensor_noise"]:
-                combined_synthetic_prob = max(0.02, combined_synthetic_prob - 0.40)
-            elif exif_feats["has_camera_hardware"] and not fft_feats["is_abnormal_spectrum"]:
-                combined_synthetic_prob = max(0.04, combined_synthetic_prob - 0.28)
-            elif exif_feats["has_camera_hardware"]:
-                combined_synthetic_prob = max(0.06, combined_synthetic_prob - 0.18)
-
-            if exif_feats["has_ai_tag"] and exif_feats["detected_ai_tool"]:
-                combined_synthetic_prob = max(0.90, combined_synthetic_prob)
-            if fft_feats["is_abnormal_spectrum"] and noise_feats["synthetic_smoothness"] > 40:
-                combined_synthetic_prob = max(0.75, combined_synthetic_prob)
-            elif fft_feats["is_abnormal_spectrum"]:
-                combined_synthetic_prob = max(0.55, combined_synthetic_prob)
-        else:
-            combined_synthetic_prob = (
-                (fft_anomaly * 0.35) +
-                (noise_smoothness * 0.25) +
-                (ela_anomaly * 0.20) +
-                (exif_ai_factor * 0.20)
-            ) * hardware_dampener
-
-        # Final sigmoid calibration for smooth graduated 0-100 percent scores
-        synthetic_prob = sigmoid(combined_synthetic_prob * 1.5, k=6.0, x0=0.35)
-        synthetic_prob = max(0.03, min(0.97, synthetic_prob))
-        authentic_prob = 1.0 - synthetic_prob
-
-        synth_score = int(round(synthetic_prob * 100))
-        authentic_score = int(round(authentic_prob * 100))
-        uncertain_score = max(0, 100 - synth_score - authentic_score)
-        normalized_synthetic = round(synthetic_prob, 4)
-        normalized_authentic = round(authentic_prob, 4)
-
-        # Calibrated 5-tier classification system
-        if synthetic_prob >= 0.80:
-            confidence_tier = "AI GENERATED (High Confidence)"
-            verdict_text = "AI-GENERATED IMAGE (SYNTHETIC MEDIA)"
-            status_badge = "AI-GENERATED / SYNTHETIC"
-            is_synthetic = True
-            display_confidence = synth_score
-        elif synthetic_prob >= 0.60:
-            confidence_tier = "LIKELY AI GENERATED"
-            verdict_text = "LIKELY AI-GENERATED (SYNTHETIC MEDIA)"
-            status_badge = "LIKELY AI-GENERATED"
-            is_synthetic = True
-            display_confidence = synth_score
-        elif synthetic_prob > 0.40:
-            confidence_tier = "INCONCLUSIVE / SUSPICIOUS"
-            verdict_text = "INCONCLUSIVE FORENSIC ANALYSIS"
-            status_badge = "INCONCLUSIVE / SUSPICIOUS"
-            is_synthetic = synthetic_prob >= 0.50
-            display_confidence = max(synth_score, authentic_score)
-        elif synthetic_prob >= 0.20:
-            confidence_tier = "LIKELY REAL PHOTOGRAPH"
-            verdict_text = "LIKELY REAL PHOTOGRAPH (AUTHENTIC)"
-            status_badge = "LIKELY REAL PHOTOGRAPH"
-            is_synthetic = False
-            display_confidence = authentic_score
-        else:
-            confidence_tier = "REAL PHOTOGRAPH (Verified Authentic)"
-            verdict_text = "REAL PHOTOGRAPH (AUTHENTIC CAMERA CAPTURE)"
-            status_badge = "REAL PHOTOGRAPH / AUTHENTIC"
-            is_synthetic = False
-            display_confidence = authentic_score
-
-        # Human-readable findings — clear, plain-English explanations of physical and mathematical evidence
-        primary_findings = []
-        supporting_findings = []
-
-        # EXIF Hardware provenance finding
-        if exif_feats["has_ai_tag"] and exif_feats["detected_ai_tool"]:
-            primary_findings.append(
-                f"Metadata confirms AI generation software: '{exif_feats['detected_ai_tool']}' tag detected in file headers."
-            )
-            supporting_findings.append(
-                f"Software markers found: {', '.join(exif_feats['ai_software_markers_found']) or 'Multiple generative tools'}"
-            )
-        elif exif_feats["has_camera_hardware"]:
-            primary_findings.append(
-                f"Physical camera hardware verified: {exif_feats['camera_description']}."
-            )
-            supporting_findings.append(
-                f"EXIF provenance contains {exif_feats['raw_tags_count']} camera calibration tags including ISO {iso}, shutter speed, and lens model."
-            )
-        elif not exif_feats["has_camera_hardware"] and not exif_feats["has_exposure_params"]:
-            primary_findings.append(
-                "File metadata lacks any physical camera hardware provenance (no Make, Model, ISO, or shutter speed tags)."
-            )
-            supporting_findings.append(
-                "Absence of optical camera calibration tags is consistent with synthetic diffusion exports."
-            )
-
-        # 2D-FFT spectral analysis finding
-        if fft_feats["is_abnormal_spectrum"]:
-            primary_findings.append(
-                f"2D Fourier Transform reveals unnatural azimuthal lattice spikes: spectral entropy {fft_feats['spectral_entropy']} exceeds natural photographic threshold (normal: 8–14)."
-            )
-            supporting_findings.append(
-                f"Frequency ratio (outer/inner) = {fft_feats['spectral_ratio']:.4f}, indicating concentrated synthetic energy at high-frequency rings."
-            )
-        else:
-            primary_findings.append(
-                "2D-FFT frequency spectrum conforms to continuous 1/f photographic power-law decay — no lattice artifacts detected."
-            )
-            supporting_findings.append(
-                f"Azimuthal spectral entropy ({fft_feats['spectral_entropy']}) matches natural optical camera capture profile."
-            )
-
-        # Sensor PRNU noise finding
-        if noise_feats["synthetic_smoothness"] > 35:
-            primary_findings.append(
-                f"Complete absence of CMOS sensor PRNU photon shot-noise: residual sigma {noise_feats['noise_sigma']} falls below physical camera threshold (>2.0)."
-            )
-            supporting_findings.append(
-                f"Laplacian edge variance ({noise_feats['laplacian_variance']:.2f}) and noise residual ({noise_feats['noise_sigma']:.3f}) indicate synthetic over-smoothing typical of diffusion models."
-            )
-        elif noise_feats["has_sensor_noise"]:
-            primary_findings.append(
-                f"Physical silicon sensor noise residual confirmed: PRNU sigma {noise_feats['noise_sigma']} matches CMOS photon shot-noise profile."
-            )
-            supporting_findings.append(
-                f"Laplacian edge variance ({noise_feats['laplacian_variance']:.2f}) consistent with authentic optical lens detail capture."
-            )
-        else:
-            primary_findings.append(
-                f"Low sensor noise residual (sigma: {noise_feats['noise_sigma']:.3f}) — consistent with either heavily compressed synthetic output or very smooth digital art."
-            )
-
-        # ELA finding
-        if ela_feats["ela_std_error"] > 12:
-            primary_findings.append(
-                f"Error Level Analysis shows divergent quantization residuals (std: {ela_feats['ela_std_error']:.2f}), indicating inconsistent compression across regions — typical of synthetic image inpainting or compositing."
-            )
-        elif ela_feats["ela_std_error"] < 3:
-            primary_findings.append(
-                f"ELA residual deviation is extremely low (std: {ela_feats['ela_std_error']:.2f}), suggesting a single-pass render without mixed compression artifacts — consistent with diffusion model output."
-            )
-        else:
-            primary_findings.append(
-                f"ELA quantization error variance ({ela_feats['ela_std_error']:.2f}) indicates consistent single-pass JPEG compression profile — consistent with authentic camera capture."
-            )
-
-        # Neural ViT finding
-        if neural_synthetic_score is not None:
-            if is_synthetic:
-                primary_findings.append(
-                    f"Vision Transformer (ViT) neural classifier confirmed synthetic generative pattern with {int(neural_synthetic_score * 100)}% deepfake/AI probability."
-                )
-            else:
-                primary_findings.append(
-                    f"Vision Transformer (ViT) neural classifier verified natural photographic optics with {int(neural_real_score * 100)}% realism probability."
-                )
-            supporting_findings.append(
-                f"Model: {model_used}"
-            )
-
-        # 4. Generate Spatial Hotspots
-        hotspots = detect_anomaly_hotspots(img_bgr, is_synthetic)
-
-        # 5. RL Verification Trajectory
+        # 5. Verification Trajectory
         file_size_mb = f"{(len(raw_bytes) / (1024 * 1024)):.2f} MB"
         file_format = pil_img.format or "JPEG"
 
@@ -679,9 +789,9 @@ async def predict_image(file: UploadFile = File(...)):
                 "title": "Neural Vision Probe (ViT)",
                 "status": "AI Generative Anomaly" if is_synthetic else "Natural Optical Manifold",
                 "confidence": synth_score if is_synthetic else authentic_score,
-                "description": f"Model ({model_used}) {'detected synthetic generative artifacts' if is_synthetic else 'verified natural photographic optics'}.",
+                "description": f"Model ({model_used}) {'detected synthetic generative patterns' if is_synthetic else 'verified natural photographic optics'}.",
                 "icon": "Scan",
-                "details": f"ViT prediction: {'AI Generated / Deepfake' if is_synthetic else 'Realism'} ({synth_score if is_synthetic else authentic_score}%).",
+                "details": f"ViT prediction: {'AI Generated / Synthetic' if is_synthetic else 'Realism'} ({int(round(neural_synthetic_score * 100))}% AI probability, crop std {crop_stats['std']:.2f}).",
                 "severity": "high" if is_synthetic else "low",
             },
             "frequencyAnalysis": {
@@ -712,7 +822,7 @@ async def predict_image(file: UploadFile = File(...)):
                 "severity": "high" if is_synthetic else "low",
             },
         }
- 
+
         result_data = {
             "id": f"scan-{int(time.time() * 1000)}",
             "filename": file.filename or "uploaded_sample.jpg",
@@ -735,7 +845,7 @@ async def predict_image(file: UploadFile = File(...)):
             "uncertainConfidence": uncertain_score,
             "confidenceTier": confidence_tier,
             "statusBadge": status_badge,
-            "riskLevel": "CRITICAL" if is_synthetic else ("ELEVATED" if synthetic_prob > 0.40 else "LOW"),
+            "riskLevel": risk_level,
             "engine": "VeriLens Multi-Signal Forensics Engine (ViT + FFT + ELA + PRNU + EXIF)",
             "primaryFindings": primary_findings,
             "supportingFindings": supporting_findings,
@@ -747,20 +857,27 @@ async def predict_image(file: UploadFile = File(...)):
                 "exif_metadata": exif_feats,
             },
             "explainableAI": {
-                "primaryDetection": "Diffusion High-Frequency Azimuthal Peak" if is_synthetic else "Organic Silicon Photo-Response Uniformity",
-                "modelType": "Multi-Signal Ensemble (Vision Transformer + CV Physics)",
-                "anomalyDistribution": "Concentrated in synthetic high-frequency gradient boundaries" if is_synthetic else "Uniform sensor-level Poisson-Gaussian noise",
+                "primaryDetection": "Diffusion Generative Pattern / ViT" if is_synthetic else "Organic Optical Wavefront / Lens Profile",
+                "modelType": f"Multi-Crop ViT ({model_used}) + CV Physics",
+                "anomalyDistribution": "Concentrated in synthetic generative boundary artifacts" if is_synthetic else "Uniform sensor-level Poisson-Gaussian noise",
                 "fftAnalysis": f"2D-FFT azimuthal entropy: {fft_feats['spectral_entropy']} — {'Pronounced synthetic frequency clustering' if is_synthetic else 'Natural 1/f power law distribution'}",
                 "elaAnalysis": f"ELA residual deviation: {ela_feats['ela_std_error']} — {'Divergent compression profile' if is_synthetic else 'Consistent single-compression profile'}",
                 "prnuAnalysis": f"Sensor fingerprint correlation sigma: {noise_feats['noise_sigma']} — {'CMOS sensor noise absent' if is_synthetic else 'Matched physical silicon wafer pattern'}",
                 "exifAnalysis": f"Hardware provenance: {'AI tool detected (' + str(exif_feats['detected_ai_tool']) + ')' if exif_feats['has_ai_tag'] else ('Camera hardware verified: ' + exif_feats['camera_description'] if exif_feats['has_camera_hardware'] else 'No physical camera metadata found')}",
-                "hardwareDampenerApplied": round(hardware_dampener, 2),
-                "normalizedSynthetic": normalized_synthetic,
-                "normalizedAuthentic": normalized_authentic,
-                "verdictSummary": f"Multi-signal forensic ensemble identified {'synthetic AI generation artifacts' if is_synthetic else 'an authentic real photograph'} with {synth_score if is_synthetic else authentic_score}% confidence across {len(primary_findings) + len(supporting_findings)} evidence signals.",
+                "hardwareDampenerApplied": round(scoring_res["quality_multiplier"], 2),
+                "normalizedSynthetic": round(synthetic_prob, 4),
+                "normalizedAuthentic": round(1.0 - synthetic_prob, 4),
+                "verdictSummary": f"Ensemble identified {'synthetic AI generation artifacts' if is_synthetic else 'an authentic real photograph'} with {synth_score if is_synthetic else authentic_score}% confidence across multi-crop and forensic signals.",
             },
             "highImpactRegions": hotspots,
             "heatmapHotspots": hotspots,
+            "spatialGrid": spatial_grid,
+            "cropConsistency": scoring_res["crop_consistency"],
+            "reasons": scoring_res["reasons"],
+            "limitations": scoring_res["limitations"],
+            "calibratedProbability": scoring_res["calibrated_p_ai"],
+            "scoringMethod": scoring_res["scoring_method"],
+            "qualityMultiplier": scoring_res["quality_multiplier"],
             "rlVerification": {
                 "actions": 6,
                 "evidenceSignals": 16,
@@ -774,7 +891,7 @@ async def predict_image(file: UploadFile = File(...)):
                     {"step": 2, "name": "State Tensor Normalization", "code": "S_0 ∈ R^(HxWx4)", "detail": f"Fast Tensor Ingestion for {width}x{height} image", "status": "completed", "latency": "9ms"},
                     {"step": 3, "name": "Spectral Action Probe", "code": "FFT-2D(a_2)", "detail": f"2D Fast Fourier Transform computed: entropy {fft_feats['spectral_entropy']}", "status": "completed", "latency": "22ms"},
                     {"step": 4, "name": "Sensor Noise Wavelet Policy", "code": "PRNU(a_3)", "detail": f"CMOS sensor residual computed: sigma {noise_feats['noise_sigma']}", "status": "completed", "latency": "28ms"},
-                    {"step": 5, "name": "Vision Transformer Neural Probe", "code": "ViT(x)", "detail": f"Evaluated via {model_used}", "status": "completed", "latency": "44ms"},
+                    {"step": 5, "name": "Multi-Crop ViT Neural Probe", "code": "ViT(x)", "detail": f"Evaluated via {model_used} ({crop_stats['num_crops']} crops)", "status": "completed", "latency": "44ms"},
                     {"step": 6, "name": "Ensemble Convergence", "code": "Q*(s,a)", "detail": f"Forensic ensemble converged: {'AI Generated / Synthetic Media' if is_synthetic else 'Authentic Real Photograph'} verified", "status": "verified", "latency": "11ms"},
                 ],
             },
@@ -839,6 +956,7 @@ async def predict_image(file: UploadFile = File(...)):
             },
             "highImpactRegions": [],
             "heatmapHotspots": [],
+            "spatialGrid": [],
             "rlVerification": {
                 "actions": 3,
                 "evidenceSignals": 4,

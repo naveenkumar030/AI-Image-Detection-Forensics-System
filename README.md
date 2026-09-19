@@ -1,63 +1,99 @@
-# VeriLens RL — Reinforcement Learning Image Forensics System
+# VeriLens — AI Image Detection & Multi-Signal Forensics System
 
-Autonomous Reinforcement Learning (RL) Image Forensics and Digital Media Provenance platform styled with the **Google Stitch** design system.
+Digital Image Verification & Provenance Platform combining deep Vision Transformer (ViT) classification with classic computer vision physics, styled with the **Google Stitch** design system.
 
-## Key Architecture: Why RL Only?
+---
 
-Traditional computer vision classifiers rely on superficial texture shortcuts and fragile heuristics that fail against new generative pipelines. VeriLens RL models digital image verification as a **Markov Decision Process (MDP)**:
+## Architecture Overview
 
-1. **State Space $S$**: Multi-resolution sub-pixel tensors, dual-tree wavelets, 2D-FFT azimuthal power spectra, and Photo-Response Non-Uniformity (PRNU) residual matrices.
-2. **Action Space $A$**: Dynamic forensic policy probes (spatial boundary saccades, azimuthal frequency slices, wavelet noise residual isolation, and quantization table validation).
-3. **Reward Function $R(s, a)$**: Formulated as information gain and empirical sensor anomaly divergence ($R = D_{KL}(P_{sensor} || P_{sample}) - \lambda \cdot \text{Cost}(a)$).
-4. **Policy Optimization**: Deep Q-Networks (DQN) and Proximal Policy Optimization (PPO) Actor-Critic agents achieving Bellman optimality ($Q^*(s, a)$).
-5. **Physical Hardware Baseline**: PRNU silicon wafer photon noise serves as an unhackable hardware truth ground.
+VeriLens employs a **calibrated hybrid ensemble** architecture designed to detect general AI-generated imagery while minimizing false positives on camera photographs.
 
-## Google Stitch Design System
+### 1. Primary Neural Vision Classifier
+- **Model**: [`umm-maybe/AI-image-detector`](https://huggingface.co/umm-maybe/AI-image-detector)
+- **Architecture**: Vision Transformer (ViT) fine-tuned for discriminating authentic human photographs from artificial/synthetic generator outputs.
+- **Dynamic Label Mapping**: Model labels are resolved dynamically at load time via `model.config.id2label` (mapping `artificial` to AI and `human` to Real).
+- **Multi-Crop Inference**: Automatically partitions images exceeding $224 \times 224$ into multi-crop tiles (center crop and spatial quadrants) and aggregates logits via mean pooling while reporting crop standard deviation as a spatial agreement metric.
+- **Test-Time Augmentation (TTA)**: Evaluates horizontal reflections to ensure spatial invariance.
+- **Temperature Scaling**: Logits are scaled by temperature $T$ (configurable via `backend/config/calibration.json`) to output well-calibrated posterior probabilities.
 
-- **Tonal Dark Surfaces**: Layered container hierarchy (`stitch-surface-container`, `stitch-surface-container-high`, `stitch-surface-container-highest`).
-- **Google Stitch Chips & Pills**: Segmented action bars, glowing telemetry indicators, and interactive policy selectors.
-- **Interactive Q-Trajectory Curve**: Live SVG visualization of agent Bellman convergence across sequential action steps.
-- **Explainable RL (XRL)**: Q-value saliency maps and policy gradient attribution overlays.
+### 2. Secondary Computer Vision Forensics
+Forensic signals serve as secondary evidence and are dynamically attenuated when images are downscaled ($<256\text{px}$) or heavily recompressed:
+- **2D Fast Fourier Transform (2D-FFT)**: Azimuthal frequency power distribution scan to detect synthetic lattice spikes versus continuous $1/f$ photographic power-law decay.
+- **Error Level Analysis (ELA)**: Evaluates differential JPEG compression quantization residuals to detect inpainting and unnatural compression artifacts.
+- **Sensor PRNU & Laplacian Residuals**: Estimates Photo-Response Non-Uniformity (sensor photon noise) and high-frequency edge variance to distinguish physical camera sensor noise from diffusion over-smoothing.
+- **Hardware EXIF Metadata Provenance**: Inspects optical camera metadata (Make, Model, ISO, Shutter, Lens) and flags known generative software tags.
 
-## Python Backend & Neural Detection Engine
+### 3. Calibrated Scoring Engine (`backend/scoring.py`)
+- **Neural Primary Weight**: Neural ViT contributes $75\text{--}85\%$ of the base probability.
+- **Forensic Secondary Weight**: Forensics contribute $15\text{--}25\%$, scaled down based on image quality and compression level.
+- **Verdict Thresholds**:
+  - $p_{\text{ai}} \ge 0.70$ $\rightarrow$ **AI-Generated Image** (`isAIGenerated: true`)
+  - $p_{\text{ai}} \le 0.30$ $\rightarrow$ **Real Photograph** (`isAIGenerated: false`)
+  - $0.30 < p_{\text{ai}} < 0.70$ $\rightarrow$ **Inconclusive / Uncertain**
+- **Pluggable Combiner**: Supports loading a trained scikit-learn classifier (`backend/models/combiner.joblib`) fitted on benchmark datasets, falling back to rule-based calibration.
 
-VeriLens RL includes a dedicated **Python 3.13 FastAPI** backend powered by **PyTorch**, **HuggingFace Transformers** (`prithivMLmods/deepfake-detector-model-v1`), and **OpenCV / NumPy / SciPy** computer vision forensics.
+---
 
-### Backend Features
-- **Neural ViT Classification**: Evaluates `prithivMLmods/deepfake-detector-model-v1` for authentic vs. deepfake probability distribution.
-- **2D Fast Fourier Transform (2D-FFT)**: Azimuthal frequency energy distribution scan to detect synthetic generative lattice spikes.
-- **Error Level Analysis (ELA)**: Compression artifact residual computation via PIL differential quantization.
-- **Laplacian & Sensor PRNU Estimation**: High-frequency gradient variance and sensor noise fingerprint matching.
-- **REST Endpoints**:
-  - `GET /api/health` — Health check & model warm-up status.
-  - `POST /api/predict` — Multipart image upload running full hybrid neural + forensic analysis.
+## Known Limitations
 
-### Quick Start Commands
+1. **Generative Model Evolution**: The primary neural classifier was trained primarily on earlier generative architectures (e.g., Stable Diffusion 1.x/2.x, Midjourney v4/v5, DALL-E 2/3, GANs). Accuracy can be lower on state-of-the-art generators (Midjourney v6+, Flux.1, SDXL variants, and ultra-high-fidelity upscalers).
+2. **Recompression & Downsampling**: Heavy social media recompression (JPEG quality $<60$) and thumbnail resizing ($<256\text{px}$) strip high-frequency forensic cues (PRNU, 2D-FFT lattice, ELA), reducing secondary signal confidence. The engine automatically outputs a limitation warning for degraded images.
+3. **Illustrations & Digital Artwork**: Non-photographic digital paintings, UI screenshots, and clean vector art may lack physical camera sensor noise, which can occasionally trigger inconclusive confidence tiers.
 
-#### 1. Start the Python Backend
-In a terminal in the project directory (or double-click `backend/start.bat`):
+---
+
+## REST API Endpoints
+
+- **`GET /api/health`**: Returns system status, model ID, device (`cuda` or `cpu`), resolved label mapping, and active temperature.
+- **`POST /api/predict`**: Accepts multipart image upload (`file`). Returns full JSON analysis containing:
+  - `verdict`, `statusBadge`, `confidenceTier`, `riskLevel`
+  - `confidence` (display score 0–100)
+  - `realConfidence`, `syntheticConfidence`, `uncertainConfidence`
+  - `cropConsistency` (`mean`, `std`, `min`, `max`, `num_crops`)
+  - `primaryFindings`, `supportingFindings`, `reasons`, `limitations`
+  - `metrics` (2D-FFT, ELA, PRNU noise, EXIF tags)
+  - `rlVerification` (sequential verification steps for UI animation)
+
+---
+
+## Evaluation & Calibration Suite (`backend/evaluate.py`)
+
+Run benchmark evaluation against a dataset structured as `dataset/real/` and `dataset/ai/`:
+
 ```bash
-py -3.13 -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
-```
-The backend starts at: `http://127.0.0.1:8000` (interactive Swagger docs at `http://127.0.0.1:8000/docs`).
+# Run benchmark and export CSV metrics
+python backend/evaluate.py --dataset path/to/dataset --save-csv evaluation_results.csv
 
-#### 2. Start the Frontend
+# Run benchmark and fit temperature scaling & combiner model
+python backend/evaluate.py --dataset path/to/dataset --calibrate
+```
+
+Outputs:
+- Accuracy, Precision, Recall, F1 Score, ROC-AUC
+- Confusion matrix
+- Accuracy sweep across multiple thresholds ($0.30 \dots 0.80$)
+- Saves calibration parameters to `backend/config/calibration.json` and `backend/models/combiner.joblib`.
+
+---
+
+## Quick Start Commands
+
+### 1. Python Forensics Backend
+Ensure dependencies are installed:
+```bash
+pip install -r backend/requirements.txt
+```
+
+Start the FastAPI server (or double-click `backend/start.bat`):
+```bash
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+```
+Interactive API documentation is available at: `http://127.0.0.1:8000/docs`.
+
+### 2. React / Vite Frontend
 In another terminal:
 ```bash
-# Install dependencies
 npm install
-
-# Start development server
 npm run dev
-
-# Or build & preview production bundle
-npm run build
-npm run preview
 ```
-
-The application runs at:
-```text
-http://localhost:5173/
-```
-The frontend automatically connects to the Python backend on port 8000 and displays a green `PYTHON BACKEND: ONLINE (PORT 8000)` indicator in the topbar. If the backend is offline, the interface gracefully falls back to client standalone mode.
-
+Runs at `http://localhost:5173/`. The UI connects to `http://127.0.0.1:8000` with graceful fallback to browser canvas inspection if the backend is offline.
